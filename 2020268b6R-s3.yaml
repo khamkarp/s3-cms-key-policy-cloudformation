@@ -1,0 +1,403 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Resources:
+  ServiceRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: s3.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: LambdaS3GlueFullAccess
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'glue:*'
+                  - 'lambda:*'
+                  - 's3:*'
+                Resource: '*'
+      Path: /
+
+  StagingKey:
+    Type: AWS::KMS::Key
+    Properties:
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Id: staging-key
+        Statement:
+          - Sid: Enable IAM User Permissions
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: kms:*
+            Resource: '*'
+          - Sid: Allow use of the key
+            Effect: Allow
+            Principal:
+              AWS: !GetAtt ServiceRole.Arn
+            Action:
+              - kms:DescribeKey
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey
+              - kms:GenerateDataKeyWithoutPlaintext
+            Resource: '*'
+  StagingKeyAlias:
+    Type: 'AWS::KMS::Alias'
+    Properties:
+      AliasName: !Sub 'alias/staging'
+      TargetKeyId: !Ref StagingKey
+  RawKey:
+    Type: AWS::KMS::Key
+    Properties:
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Id: uat-key
+        Statement:
+          - Sid: Enable IAM User Permissions
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: kms:*
+            Resource: '*'
+          - Sid: Allow use of the key
+            Effect: Allow
+            Principal:
+              AWS: !GetAtt ServiceRole.Arn
+            Action:
+              - kms:DescribeKey
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey
+              - kms:GenerateDataKeyWithoutPlaintext
+            Resource: '*'
+  RawKeyAlias:
+    Type: 'AWS::KMS::Alias'
+    Properties:
+      AliasName: !Sub 'alias/uat'
+      TargetKeyId: !Ref RawKey
+  TransformedKey:
+    Type: AWS::KMS::Key
+    Properties:
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Id: prestaging-key
+        Statement:
+          - Sid: Enable IAM User Permissions
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: kms:*
+            Resource: '*'
+          - Sid: Allow use of the key
+            Effect: Allow
+            Principal:
+              AWS: !GetAtt ServiceRole.Arn
+            Action:
+              - kms:DescribeKey
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey
+              - kms:GenerateDataKeyWithoutPlaintext
+            Resource: '*'
+  TransformedKeyAlias:
+    Type: 'AWS::KMS::Alias'
+    Properties:
+      AliasName: !Sub 'alias/prestaging'
+      TargetKeyId: !Ref TransformedKey
+  StagingBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !GetAtt StagingKey.Arn
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketName: !Join
+        - "-"
+        - - "staging"
+          - !Select
+            - 0
+            - !Split
+              - "-"
+              - !Select
+                - 2
+                - !Split
+                  - "/"
+                  - !Ref "AWS::StackId"
+  RawBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !GetAtt RawKey.Arn
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketName: !Join
+        - "-"
+        - - "uat"
+          - !Select
+            - 0
+            - !Split
+              - "-"
+              - !Select
+                - 2
+                - !Split
+                  - "/"
+                  - !Ref "AWS::StackId"
+  TransformedBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !GetAtt TransformedKey.Arn
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketName: !Join
+        - "-"
+        - - "prestaging"
+          - !Select
+            - 0
+            - !Split
+              - "-"
+              - !Select
+                - 2
+                - !Split
+                  - "/"
+                  - !Ref "AWS::StackId"
+  StagingBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref StagingBucket
+      PolicyDocument:
+        Statement:
+          - Action:
+              - 's3:GetObject'
+            Effect: Allow
+            Principal:
+              AWS: !GetAtt ServiceRole.Arn
+            Resource: !Sub arn:aws:s3:::${StagingBucket}/*
+            Sid: GetObjectAccessServiceRole
+          - Action:
+              - 's3:GetObject'
+              - 's3:PutObject'
+            Condition:
+              Bool:
+                'aws:SecureTransport': false
+            Effect: Deny
+            Principal: '*'
+            Resource: !Sub arn:aws:s3:::${StagingBucket}/*
+            Sid: DenyUnencryptedConnections
+          - Action:
+              - 's3:PutBucketAcl'
+              - 's3:PutObject'
+              - 's3:PutObjectAcl'
+            Condition:
+              StringEquals:
+                's3:x-amz-acl':
+                  - authenticated-read
+                  - public-read
+                  - public-read-write
+            Effect: Deny
+            Principal: '*'
+            Resource:
+              - !Sub arn:aws:s3:::${StagingBucket}
+              - !Sub arn:aws:s3:::${StagingBucket}/*
+            Sid: DenyPublicReadAcl
+          - Action:
+              - 's3:PutBucketAcl'
+              - 's3:PutObject'
+              - 's3:PutObjectAcl'
+            Condition:
+              StringLike:
+                's3:x-amz-grant-read':
+                  - '*http://acs.amazonaws.com/groups/global/AllUsers*'
+                  - '*http://acs.amazonaws.com/groups/global/AuthenticatedUsers*'
+            Effect: Deny
+            Principal: '*'
+            Resource:
+              - !Sub arn:aws:s3:::${StagingBucket}
+              - !Sub arn:aws:s3:::${StagingBucket}/*
+            Sid: DenyGrantingPublicRead
+          - Sid: DenyIncorrectEncryptionHeader
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:PutObject'
+            Resource: !Sub arn:aws:s3:::${StagingBucket}/*
+            Condition:
+              StringNotEquals:
+                s3:x-amz-server-side-encryption: 'aws:kms'
+          - Sid: DenyUnEncryptedObjectUploads
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:PutObject'
+            Resource: !Sub arn:aws:s3:::${StagingBucket}/*
+            Condition:
+              'Null':
+                s3:x-amz-server-side-encryption: true
+  RawBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref RawBucket
+      PolicyDocument:
+        Statement:
+          - Action:
+              - 's3:GetObject'
+            Effect: Allow
+            Principal:
+              AWS: !GetAtt ServiceRole.Arn
+            Resource: !Sub arn:aws:s3:::${RawBucket}/*
+            Sid: GetObjectAccessServiceRole
+          - Action:
+              - 's3:GetObject'
+              - 's3:PutObject'
+            Condition:
+              Bool:
+                'aws:SecureTransport': false
+            Effect: Deny
+            Principal: '*'
+            Resource: !Sub arn:aws:s3:::${RawBucket}/*
+            Sid: DenyUnencryptedConnections
+          - Action:
+              - 's3:PutBucketAcl'
+              - 's3:PutObject'
+              - 's3:PutObjectAcl'
+            Condition:
+              StringEquals:
+                's3:x-amz-acl':
+                  - authenticated-read
+                  - public-read
+                  - public-read-write
+            Effect: Deny
+            Principal: '*'
+            Resource:
+              - !Sub arn:aws:s3:::${RawBucket}
+              - !Sub arn:aws:s3:::${RawBucket}/*
+            Sid: DenyPublicReadAcl
+          - Action:
+              - 's3:PutBucketAcl'
+              - 's3:PutObject'
+              - 's3:PutObjectAcl'
+            Condition:
+              StringLike:
+                's3:x-amz-grant-read':
+                  - '*http://acs.amazonaws.com/groups/global/AllUsers*'
+                  - '*http://acs.amazonaws.com/groups/global/AuthenticatedUsers*'
+            Effect: Deny
+            Principal: '*'
+            Resource:
+              - !Sub arn:aws:s3:::${RawBucket}
+              - !Sub arn:aws:s3:::${RawBucket}/*
+            Sid: DenyGrantingPublicRead
+          - Sid: DenyIncorrectEncryptionHeader
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:PutObject'
+            Resource: !Sub arn:aws:s3:::${RawBucket}/*
+            Condition:
+              StringNotEquals:
+                s3:x-amz-server-side-encryption: 'aws:kms'
+          - Sid: DenyUnEncryptedObjectUploads
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:PutObject'
+            Resource: !Sub arn:aws:s3:::${RawBucket}/*
+            Condition:
+              'Null':
+                s3:x-amz-server-side-encryption: true
+  TransformedBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref TransformedBucket
+      PolicyDocument:
+        Statement:
+          - Action:
+              - 's3:GetObject'
+            Effect: Allow
+            Principal:
+              AWS: !GetAtt ServiceRole.Arn
+            Resource: !Sub arn:aws:s3:::${TransformedBucket}/*
+            Sid: GetObjectAccessServiceRole
+          - Action:
+              - 's3:GetObject'
+              - 's3:PutObject'
+            Condition:
+              Bool:
+                'aws:SecureTransport': false
+            Effect: Deny
+            Principal: '*'
+            Resource: !Sub arn:aws:s3:::${TransformedBucket}/*
+            Sid: DenyUnencryptedConnections
+          - Action:
+              - 's3:PutBucketAcl'
+              - 's3:PutObject'
+              - 's3:PutObjectAcl'
+            Condition:
+              StringEquals:
+                's3:x-amz-acl':
+                  - authenticated-read
+                  - public-read
+                  - public-read-write
+            Effect: Deny
+            Principal: '*'
+            Resource:
+              - !Sub arn:aws:s3:::${TransformedBucket}
+              - !Sub arn:aws:s3:::${TransformedBucket}/*
+            Sid: DenyPublicReadAcl
+          - Action:
+              - 's3:PutBucketAcl'
+              - 's3:PutObject'
+              - 's3:PutObjectAcl'
+            Condition:
+              StringLike:
+                's3:x-amz-grant-read':
+                  - '*http://acs.amazonaws.com/groups/global/AllUsers*'
+                  - '*http://acs.amazonaws.com/groups/global/AuthenticatedUsers*'
+            Effect: Deny
+            Principal: '*'
+            Resource:
+              - !Sub arn:aws:s3:::${TransformedBucket}
+              - !Sub arn:aws:s3:::${TransformedBucket}/*
+            Sid: DenyGrantingPublicRead
+          - Sid: DenyIncorrectEncryptionHeader
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:PutObject'
+            Resource: !Sub arn:aws:s3:::${TransformedBucket}/*
+            Condition:
+              StringNotEquals:
+                s3:x-amz-server-side-encryption: 'aws:kms'
+          - Sid: DenyUnEncryptedObjectUploads
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:PutObject'
+            Resource: !Sub arn:aws:s3:::${TransformedBucket}/*
+            Condition:
+              'Null':
+                s3:x-amz-server-side-encryption: true
